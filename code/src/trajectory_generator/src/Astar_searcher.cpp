@@ -209,6 +209,7 @@ double Astarpath::getHeu(MappingNodePtr node1, MappingNodePtr node2) {
 }
 
 
+
 bool Astarpath::AstarSearch(Vector3d start_pt, Vector3d end_pt) {
   ros::Time time_1 = ros::Time::now();
 
