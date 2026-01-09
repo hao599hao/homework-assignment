@@ -142,7 +142,7 @@ git clone https://github.com/Dwl2021/MRPC-2025-homework.git
 - `/so3_control`：进行位置控制
 - `/quadrotor_simulator_so3`：控制四旋翼无人机的运动
 
-## 3. 实验任务
+## 3. 实验任务  
 
 ### 3.1 任务一：补全四旋翼飞机的动力学模型
 
