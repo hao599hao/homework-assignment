@@ -97,7 +97,7 @@ vector<Vector3d> Astarpath::getVisitedNodes() {
           visited_nodes.push_back(Map_Node[i][j][k]->coord);
       }
 
-  ROS_WARN("visited_nodes size : %d", visited_nodes.size());
+  ROS_WARN("visited_nodes size : %ld", visited_nodes.size());
   return visited_nodes;
 }
 
@@ -204,7 +204,12 @@ double Astarpath::getHeu(MappingNodePtr node1, MappingNodePtr node2) {
   // 使用数字距离和一种类型的tie_breaker
   double heu;
   double tie_breaker;
-  
+  // 欧式距离
+  double euclidean_dist = (node1->coord - node2->coord).norm();
+  // 曼哈顿距离加权，避免同等f值的节点过多
+  tie_breaker = 1.001 * (abs(node1->index(0) - node2->index(0)) + abs(node1->index(1) - node2->index(1)) + abs(node1->index(2) - node2->index(2))) * resolution;
+  // 最终启发值 = 欧式距离 + 微小tie-breaker
+  heu = euclidean_dist + tie_breaker;
   return heu;
 }
 
@@ -263,10 +268,23 @@ bool Astarpath::AstarSearch(Vector3d start_pt, Vector3d end_pt) {
   while (!Openset.empty()) {
     //1.弹出g+h最小的节点
     //????
+    auto iter = Openset.begin(); // 获取OpenSet中f_score最小的节点（multimap首元素）
+    currentPtr = iter->second;   // 取出节点指针
+    Openset.erase(iter);        // 从OpenSet中删除该节点
     //2.判断是否是终点
     //????
+    if (currentPtr->index == end_idx) { // 当前节点索引等于终点索引
+      terminatePtr = currentPtr;       // 标记终止节点
+      ros::Time time_2 = ros::Time::now();
+      ROS_INFO("Astar search success! Time consume: %f s", (time_2 - time_1).toSec());
+      return true; // 搜索成功，返回true
+    }
+    // 将当前节点标记为已访问（加入CloseSet）
+    currentPtr->id = -1;
     //3.拓展当前节点
     //????
+    AstarGetSucc(currentPtr, neighborPtrSets, edgeCostSets); // 调用邻域扩展函数
+
     for(unsigned int i=0;i<neighborPtrSets.size();i++)
     {
       
@@ -282,11 +300,31 @@ bool Astarpath::AstarSearch(Vector3d start_pt, Vector3d end_pt) {
       {
         //4.填写信息，完成更新
         //???
+        neighborPtr->g_score = tentative_g_score;                  // 更新g_score
+        neighborPtr->f_score = neighborPtr->g_score + getHeu(neighborPtr, endPtr); // 更新f_score
+        neighborPtr->Father = currentPtr;                          // 记录父节点
+        neighborPtr->id = 1;                                       // 标记为在OpenSet中
+        Openset.insert(make_pair(neighborPtr->f_score, neighborPtr)); // 加入OpenSet
         continue;
       }
       else if(neighborPtr->id==1)
       {
         //???
+        if (tentative_g_score < neighborPtr->g_score) { // 新路径更优
+          // 先删除OpenSet中原有的该节点条目
+          for (auto it = Openset.begin(); it != Openset.end(); it++) {
+            if (it->second == neighborPtr) {
+              Openset.erase(it);
+              break;
+            }
+          }
+          // 更新代价和父节点
+          neighborPtr->g_score = tentative_g_score;
+          neighborPtr->f_score = neighborPtr->g_score + getHeu(neighborPtr, endPtr);
+          neighborPtr->Father = currentPtr;
+          // 重新插入OpenSet
+          Openset.insert(make_pair(neighborPtr->f_score, neighborPtr));
+        }
       continue;
       }
     }
@@ -316,6 +354,14 @@ terminatePtr=terminatePtr->Father;
    * **/
 
   // ???
+  // 补充起点节点（循环结束后terminatePtr指向起点，需加入）
+  front_path.push_back(terminatePtr);
+  // 反转路径，从起点到终点
+  for (auto it = front_path.rbegin(); it != front_path.rend(); it++) {
+    path.push_back((*it)->coord);
+  }
+  // 输出路径长度日志
+  ROS_INFO("Path length: %lu nodes", path.size());
 
   return path;
 }
