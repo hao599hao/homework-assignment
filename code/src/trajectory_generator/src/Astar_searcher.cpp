@@ -174,6 +174,7 @@ inline void Astarpath::AstarGetSucc(MappingNodePtr currentPtr,
   neighborPtrSets.clear();
   edgeCostSets.clear();
   Vector3i Idx_neighbor;
+  
   for (int dx = -1; dx < 2; dx++) {
     for (int dy = -1; dy < 2; dy++) {
       for (int dz = -1; dz < 2; dz++) {
@@ -200,20 +201,45 @@ inline void Astarpath::AstarGetSucc(MappingNodePtr currentPtr,
 }
 
 double Astarpath::getHeu(MappingNodePtr node1, MappingNodePtr node2) {
+  if (!node1 || !node2) return std::numeric_limits<double>::max();
   
-  // 使用数字距离和一种类型的tie_breaker
-  double heu;
-  double tie_breaker;
-  // 欧式距离
+  // 使用加权欧式距离 + 方向一致性启发式
   double euclidean_dist = (node1->coord - node2->coord).norm();
-  // 曼哈顿距离加权，避免同等f值的节点过多
-  tie_breaker = 1.001 * (abs(node1->index(0) - node2->index(0)) + abs(node1->index(1) - node2->index(1)) + abs(node1->index(2) - node2->index(2))) * resolution;
-  // 最终启发值 = 欧式距离 + 微小tie-breaker
-  heu = euclidean_dist + tie_breaker;
-  return heu;
+  
+  // 方向一致性启发式（减少拐弯）
+  double direction_heuristic = 0.0;
+  if (node1->Father) {
+    // 计算父节点到当前节点的方向向量
+    Vector3d dir_to_current = (node1->coord - node1->Father->coord);
+    if (dir_to_current.norm() > 0.01) {  // 避免除以零
+      // 计算当前节点到目标节点的方向向量
+      Vector3d dir_to_goal = (node2->coord - node1->coord);
+      
+      // 归一化
+      dir_to_current.normalize();
+      if (dir_to_goal.norm() > 0.01) {
+        dir_to_goal.normalize();
+        
+        // 计算方向一致性（点积越大，方向越一致）
+        double direction_similarity = dir_to_current.dot(dir_to_goal);
+        
+        // 增加方向一致性启发项
+        direction_heuristic = -0.1 * (direction_similarity + 1.0);
+      }
+    }
+  }
+  
+  // 添加较小的tie_breaker避免路径对称
+  unsigned int idx1 = static_cast<unsigned int>(node1->index(0));
+  unsigned int idx2 = static_cast<unsigned int>(node1->index(1));
+  unsigned int idx3 = static_cast<unsigned int>(node1->index(2));
+  // 使用哈希函数生成更小的tie_breaker
+  unsigned int hash = (idx1 * 73856093u) ^ (idx2 * 19349663u) ^ (idx3 * 83492791u);
+  double tie_breaker = 1e-6 * (hash % 1000u);
+  
+  // 最终启发值 = 欧式距离 + 方向启发式 + tie_breaker
+  return euclidean_dist + direction_heuristic + tie_breaker;
 }
-
-
 
 bool Astarpath::AstarSearch(Vector3d start_pt, Vector3d end_pt) {
   ros::Time time_1 = ros::Time::now();
@@ -273,7 +299,7 @@ bool Astarpath::AstarSearch(Vector3d start_pt, Vector3d end_pt) {
     Openset.erase(iter);        // 从OpenSet中删除该节点
     //2.判断是否是终点
     //????
-    if (currentPtr->index == end_idx) { // 当前节点索引等于终点索引
+    if (currentPtr->index == goalIdx) { // 当前节点索引等于终点索引
       terminatePtr = currentPtr;       // 标记终止节点
       ros::Time time_2 = ros::Time::now();
       ROS_INFO("Astar search success! Time consume: %f s", (time_2 - time_1).toSec());
@@ -310,9 +336,10 @@ bool Astarpath::AstarSearch(Vector3d start_pt, Vector3d end_pt) {
       else if(neighborPtr->id==1)
       {
         //???
-        if (tentative_g_score < neighborPtr->g_score) { // 新路径更优
-          // 先删除OpenSet中原有的该节点条目
-          for (auto it = Openset.begin(); it != Openset.end(); it++) {
+        if (tentative_g_score < neighborPtr->g_score) {
+          // 使用equal_range进行更高效的查找
+          auto range = Openset.equal_range(neighborPtr->f_score);
+          for (auto it = range.first; it != range.second; ++it) {
             if (it->second == neighborPtr) {
               Openset.erase(it);
               break;
@@ -337,16 +364,23 @@ bool Astarpath::AstarSearch(Vector3d start_pt, Vector3d end_pt) {
   return false;
 }
 
-
 vector<Vector3d> Astarpath::getPath() {
   vector<Vector3d> path;
-  vector<MappingNodePtr> front_path;
-do
-{
-terminatePtr->coord=gridIndex2coord(terminatePtr->index);
-front_path.push_back(terminatePtr);
-terminatePtr=terminatePtr->Father;
-}while(terminatePtr->Father!=NULL);
+  if (!terminatePtr) {
+    ROS_WARN("No path found!");
+    return path;
+  }
+  
+  // 从终点回溯到起点
+  vector<MappingNodePtr> temp_path;
+  MappingNodePtr ptr = terminatePtr;
+  
+  while (ptr != nullptr) {
+    // 确保坐标是最新的
+    ptr->coord = gridIndex2coord(ptr->index);
+    temp_path.push_back(ptr);
+    ptr = ptr->Father;
+  }
   /**
    *
    * STEP 1.3:  追溯找到的路径
@@ -354,18 +388,19 @@ terminatePtr=terminatePtr->Father;
    * **/
 
   // ???
-  // 补充起点节点（循环结束后terminatePtr指向起点，需加入）
-  front_path.push_back(terminatePtr);
-  // 反转路径，从起点到终点
-  for (auto it = front_path.rbegin(); it != front_path.rend(); it++) {
+  for (auto it = temp_path.rbegin(); it != temp_path.rend(); ++it) {
     path.push_back((*it)->coord);
+  }
+  if (path.size() > 1) {
+    ROS_INFO("Path found with %lu nodes", path.size());
+    ROS_INFO("Start: (%.2f, %.2f, %.2f)", path.front()(0), path.front()(1), path.front()(2));
+    ROS_INFO("End: (%.2f, %.2f, %.2f)", path.back()(0), path.back()(1), path.back()(2));
   }
   // 输出路径长度日志
   ROS_INFO("Path length: %lu nodes", path.size());
 
   return path;
 }
-
 
 std::vector<Vector3d> Astarpath::pathSimplify(const vector<Vector3d> &path,
                                                double path_resolution) {
@@ -421,6 +456,7 @@ std::vector<Vector3d> Astarpath::pathSimplify(const vector<Vector3d> &path,
 
   return resultPath;
 }
+
 
 double Astarpath::perpendicularDistance(const Eigen::Vector3d point_insert,const Eigen:: Vector3d point_st,const Eigen::Vector3d point_end)
 {
